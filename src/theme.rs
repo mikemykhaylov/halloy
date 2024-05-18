@@ -4,6 +4,7 @@ use iced::program;
 use crate::widget::combo_box;
 
 pub mod button;
+pub mod checkbox;
 pub mod container;
 pub mod menu;
 pub mod pane_grid;
@@ -46,7 +47,7 @@ impl Theme {
         }
     }
 
-    fn colors(&self) -> &Colors {
+    pub fn colors(&self) -> &Colors {
         match self {
             Theme::Selected(selected) => &selected.colors,
             Theme::Preview { preview, .. } => &preview.colors,

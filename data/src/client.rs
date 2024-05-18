@@ -152,6 +152,18 @@ impl Client {
         }
     }
 
+    fn join(&mut self, channels: &[String]) {
+        let keys = HashMap::new();
+
+        let messages = group_joins(channels, &keys);
+
+        for message in messages {
+            if let Err(e) = self.handle.try_send(message) {
+                log::warn!("Error sending join: {e}");
+            }
+        }
+    }
+
     fn send(&mut self, buffer: &Buffer, mut message: message::Encoded) {
         if self.supports_labels {
             use proto::Tag;
@@ -666,7 +678,7 @@ impl Client {
 
                     if let Some(state) = self.chanmap.get_mut(channel) {
                         // Sends WHO to get away state on users.
-                        if self.isupport.get(&isupport::Kind::WHOX).is_some() {
+                        if self.isupport.contains_key(&isupport::Kind::WHOX) {
                             let _ = self.handle.try_send(command!(
                                 "WHO",
                                 channel,
@@ -837,7 +849,7 @@ impl Client {
             }
             Command::TOPIC(channel, topic) => {
                 if let Some(channel) = self.chanmap.get_mut(channel) {
-                    channel.topic.text = topic.to_owned();
+                    topic.clone_into(&mut channel.topic.text);
 
                     channel.topic.who = message
                         .user()
@@ -874,7 +886,7 @@ impl Client {
                 // If the channel has not been joined but is in the configured channels,
                 // then interpret this numeric as ERR_NEEDREGGEDNICK (which has the
                 // same number as ERR_NOCHANMODES)
-                if self.chanmap.get(channel).is_none()
+                if !self.chanmap.contains_key(channel)
                     && self
                         .config
                         .channels
@@ -1028,7 +1040,7 @@ impl Client {
             };
 
             if let Some(request) = request {
-                if self.isupport.get(&isupport::Kind::WHOX).is_some() {
+                if self.isupport.contains_key(&isupport::Kind::WHOX) {
                     let _ = self.handle.try_send(command!(
                         "WHO",
                         channel,
@@ -1129,6 +1141,12 @@ impl Map {
     pub fn send(&mut self, buffer: &Buffer, message: message::Encoded) {
         if let Some(client) = self.client_mut(buffer.server()) {
             client.send(buffer, message);
+        }
+    }
+
+    pub fn join(&mut self, server: &Server, channels: &[String]) {
+        if let Some(client) = self.client_mut(server) {
+            client.join(channels);
         }
     }
 
