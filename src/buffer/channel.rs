@@ -3,7 +3,7 @@ use data::user::Nick;
 use data::User;
 use data::{channel, history, message, Config};
 use iced::widget::{column, container, row};
-use iced::{Command, Length};
+use iced::{padding, Length, Task};
 
 use super::{input_view, scroll_view, user_context};
 use crate::theme;
@@ -158,11 +158,7 @@ pub fn view<'a>(
     let text_input = show_text_input.then(move || {
         input_view::view(
             &state.input_view,
-            buffer,
             input,
-            users,
-            channels,
-            clients.get_isupport(&state.server),
             is_focused,
             !is_connected_to_channel,
         )
@@ -193,7 +189,7 @@ pub fn view<'a>(
     container(body)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding([4, 8, 8, 8])
+        .padding(padding::all(8).top(4))
         .into()
 }
 
@@ -225,7 +221,7 @@ impl Channel {
         message: Message,
         clients: &mut data::client::Map,
         history: &mut history::Manager,
-    ) -> (Command<Message>, Option<Event>) {
+    ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::ScrollView(message) => {
                 let (command, event) = self.scroll_view.update(message);
@@ -237,12 +233,14 @@ impl Channel {
                 (command.map(Message::ScrollView), event)
             }
             Message::InputView(message) => {
-                let (command, event) = self.input_view.update(message, clients, history);
+                let buffer = self.buffer();
+
+                let (command, event) = self.input_view.update(message, buffer, clients, history);
                 let command = command.map(Message::InputView);
 
                 match event {
                     Some(input_view::Event::InputSent) => {
-                        let command = Command::batch(vec![
+                        let command = Task::batch(vec![
                             command,
                             self.scroll_view.scroll_to_end().map(Message::ScrollView),
                         ]);
@@ -253,18 +251,18 @@ impl Channel {
                 }
             }
             Message::UserContext(message) => (
-                Command::none(),
+                Task::none(),
                 Some(Event::UserContext(user_context::update(message))),
             ),
         }
     }
 
-    pub fn focus(&self) -> Command<Message> {
+    pub fn focus(&self) -> Task<Message> {
         self.input_view.focus().map(Message::InputView)
     }
 
-    pub fn reset(&self) -> Command<Message> {
-        self.input_view.reset().map(Message::InputView)
+    pub fn reset(&mut self) {
+        self.input_view.reset();
     }
 }
 
@@ -328,13 +326,12 @@ mod nick_list {
         .spacing(1);
 
         container(
-            Scrollable::with_direction(
-                column,
-                scrollable::Direction::Vertical(
-                    scrollable::Properties::new().width(1).scroller_width(1),
-                ),
-            )
-            .style(theme::scrollable::hidden),
+            Scrollable::new(column)
+                .direction(scrollable::Direction::Vertical {
+                    scrollbar: scrollable::Scrollbar::new().width(1).scroller_width(1),
+                    spacing: None,
+                })
+                .style(theme::scrollable::hidden),
         )
         .width(Length::Shrink)
         .max_width(120)

@@ -35,7 +35,7 @@ impl Help {
                 let _ = open::that(Config::config_dir());
 
                 None
-            },
+            }
             Message::OpenWikiWebsite => {
                 let _ = open::that(WIKI_WEBSITE);
 
@@ -88,9 +88,9 @@ impl Help {
                     .spacing(4)
                     .push(config_button)
                     .push(wiki_button)
-                    .push(refresh_button)
+                    .push(refresh_button),
             )
-            .align_items(iced::Alignment::Center);
+            .align_x(iced::Alignment::Center);
 
         container(content)
             .align_x(alignment::Horizontal::Center)

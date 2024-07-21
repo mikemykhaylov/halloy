@@ -13,7 +13,7 @@ use data::user::Nick;
 use data::{client, environment, history, Config, Server, User, Version};
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{column, container, row, Space};
-use iced::{clipboard, window, Command, Length};
+use iced::{clipboard, padding, window, Length, Task};
 
 use self::command_bar::CommandBar;
 use self::pane::Pane;
@@ -21,7 +21,7 @@ use self::sidebar::Sidebar;
 use crate::buffer::file_transfers::FileTransfers;
 use crate::buffer::{self, Buffer};
 use crate::widget::{anchored_overlay, context_menu, selectable_text, shortcut, Element};
-use crate::{event, notification, theme, Theme};
+use crate::{audio, event, notification, theme, Theme};
 
 const SAVE_AFTER: Duration = Duration::from_secs(3);
 
@@ -41,10 +41,10 @@ pub enum Message {
     Sidebar(sidebar::Message),
     SelectedText(Vec<(f32, String)>),
     History(history::manager::Message),
-    Close,
+    Close(window::Id),
     DashboardSaved(Result<(), data::dashboard::Error>),
     CloseHistory,
-    Command(command_bar::Message),
+    Task(command_bar::Message),
     Shortcut(shortcut::Command),
     FileTransfer(file_transfer::task::Update),
     SendFileSelected(Server, Nick, Option<PathBuf>),
@@ -58,7 +58,7 @@ pub enum Event {
 }
 
 impl Dashboard {
-    pub fn empty(config: &Config) -> (Self, Command<Message>) {
+    pub fn empty(config: &Config) -> (Self, Task<Message>) {
         let (panes, _) = pane_grid::State::new(Pane::new(Buffer::Empty, config));
 
         let mut dashboard = Dashboard {
@@ -76,11 +76,11 @@ impl Dashboard {
         (dashboard, command)
     }
 
-    pub fn restore(dashboard: data::Dashboard, config: &Config) -> (Self, Command<Message>) {
+    pub fn restore(dashboard: data::Dashboard, config: &Config) -> (Self, Task<Message>) {
         let mut dashboard = Dashboard::from_data(dashboard, config);
 
         let command = if let Some((pane, _)) = dashboard.panes.panes.iter().next() {
-            Command::batch(vec![dashboard.focus_pane(*pane), dashboard.track()])
+            Task::batch(vec![dashboard.focus_pane(*pane), dashboard.track()])
         } else {
             dashboard.track()
         };
@@ -95,7 +95,7 @@ impl Dashboard {
         theme: &mut Theme,
         version: &Version,
         config: &Config,
-    ) -> (Command<Message>, Option<Event>) {
+    ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::Pane(message) => match message {
                 pane::Message::PaneClicked(pane) => {
@@ -132,11 +132,11 @@ impl Dashboard {
                             match event {
                                 buffer::user_context::Event::ToggleAccessLevel(nick, mode) => {
                                     let Some(buffer) = pane.buffer.data() else {
-                                        return (Command::none(), None);
+                                        return (Task::none(), None);
                                     };
 
                                     let Some(target) = buffer.target() else {
-                                        return (Command::none(), None);
+                                        return (Task::none(), None);
                                     };
 
                                     let command = data::Command::Mode(
@@ -191,7 +191,7 @@ impl Dashboard {
                                     let Some((_, pane, history)) =
                                         self.get_focused_with_history_mut()
                                     else {
-                                        return (Command::none(), None);
+                                        return (Task::none(), None);
                                     };
 
                                     return (
@@ -210,7 +210,7 @@ impl Dashboard {
                                             config.file_transfer.save_directory.clone();
 
                                         return (
-                                            Command::perform(
+                                            Task::perform(
                                                 async move {
                                                     rfd::AsyncFileDialog::new()
                                                         .set_directory(starting_directory)
@@ -219,7 +219,11 @@ impl Dashboard {
                                                         .map(|handle| handle.path().to_path_buf())
                                                 },
                                                 move |file| {
-                                                    Message::SendFileSelected(server, nick, file)
+                                                    Message::SendFileSelected(
+                                                        server.clone(),
+                                                        nick.clone(),
+                                                        file,
+                                                    )
                                                 },
                                             ),
                                             None,
@@ -266,7 +270,7 @@ impl Dashboard {
                             self.last_changed = Some(Instant::now());
                             self.focus = None;
                             return (
-                                Command::batch(vec![self.reset_pane(pane), self.focus_pane(pane)]),
+                                Task::batch(vec![self.reset_pane(pane), self.focus_pane(pane)]),
                                 None,
                             );
                         }
@@ -285,60 +289,7 @@ impl Dashboard {
                         return (self.focus_pane(from), None);
                     }
                     sidebar::Event::Leave(buffer) => {
-                        let pane = self.panes.iter().find_map(|(pane, state)| {
-                            (state.buffer.data().as_ref() == Some(&buffer)).then_some(*pane)
-                        });
-
-                        // Close pane
-                        if let Some(pane) = pane {
-                            if self.panes.close(pane).is_none() {
-                                if let Some(state) = self.panes.get_mut(pane) {
-                                    state.buffer = Buffer::Empty;
-                                }
-                            }
-                            self.last_changed = Some(Instant::now());
-
-                            if self.focus == Some(pane) {
-                                self.focus = None;
-                            }
-                        }
-
-                        match buffer.clone() {
-                            data::Buffer::Server(server) => {
-                                return (Command::none(), Some(Event::QuitServer(server)));
-                            }
-                            data::Buffer::Channel(server, channel) => {
-                                // Send part & close history file
-                                let command = data::Command::Part(channel.clone(), None);
-                                let input = data::Input::command(buffer.clone(), command);
-
-                                if let Some(encoded) = input.encoded() {
-                                    clients.send(&buffer, encoded);
-                                }
-
-                                return (
-                                    self.history
-                                        .close(server, history::Kind::Channel(channel))
-                                        .map(|task| {
-                                            Command::perform(task, |_| Message::CloseHistory)
-                                        })
-                                        .unwrap_or_else(Command::none),
-                                    None,
-                                );
-                            }
-                            data::Buffer::Query(server, nick) => {
-                                // No PART to send, just close history
-                                return (
-                                    self.history
-                                        .close(server, history::Kind::Query(nick))
-                                        .map(|task| {
-                                            Command::perform(task, |_| Message::CloseHistory)
-                                        })
-                                        .unwrap_or_else(Command::none),
-                                    None,
-                                );
-                            }
-                        }
+                        return self.leave_buffer(clients, buffer);
                     }
                     sidebar::Event::ToggleFileTransfers => {
                         return (self.toggle_file_transfers(config), None);
@@ -380,8 +331,8 @@ impl Dashboard {
             Message::History(message) => {
                 self.history.update(message);
             }
-            Message::Close => {
-                return (window::close(window::Id::MAIN), None);
+            Message::Close(window) => {
+                return (window::close(window), None);
             }
             Message::DashboardSaved(Ok(_)) => {
                 log::info!("dashboard saved");
@@ -390,9 +341,9 @@ impl Dashboard {
                 log::warn!("error saving dashboard: {error}");
             }
             Message::CloseHistory => {}
-            Message::Command(message) => {
+            Message::Task(message) => {
                 let Some(command_bar) = &mut self.command_bar else {
-                    return (Command::none(), None);
+                    return (Task::none(), None);
                 };
 
                 match command_bar.update(message) {
@@ -405,13 +356,13 @@ impl Dashboard {
                             command_bar::Command::Version(command) => match command {
                                 command_bar::Version::Application(_) => {
                                     let _ = open::that(RELEASE_WEBSITE);
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                             },
                             command_bar::Command::Buffer(command) => match command {
                                 command_bar::Buffer::Maximize(_) => {
                                     self.maximize_pane();
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                                 command_bar::Buffer::New => {
                                     (self.new_pane(pane_grid::Axis::Horizontal, config), None)
@@ -420,7 +371,7 @@ impl Dashboard {
                                     if let Some(pane) = self.focus {
                                         (self.close_pane(pane), None)
                                     } else {
-                                        (Command::none(), None)
+                                        (Task::none(), None)
                                     }
                                 }
                                 command_bar::Buffer::Replace(buffer) => {
@@ -438,7 +389,7 @@ impl Dashboard {
                                         }
                                     }
 
-                                    (Command::batch(commands), None)
+                                    (Task::batch(commands), None)
                                 }
                                 command_bar::Buffer::ToggleFileTransfers => {
                                     (self.toggle_file_transfers(config), None)
@@ -447,32 +398,32 @@ impl Dashboard {
                             command_bar::Command::Configuration(command) => match command {
                                 command_bar::Configuration::OpenDirectory => {
                                     let _ = open::that(Config::config_dir());
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                                 command_bar::Configuration::OpenWebsite => {
                                     let _ = open::that(environment::WIKI_WEBSITE);
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                                 command_bar::Configuration::Reload => {
-                                    (Command::none(), Some(Event::ReloadConfiguration))
+                                    (Task::none(), Some(Event::ReloadConfiguration))
                                 }
                             },
                             command_bar::Command::UI(command) => match command {
                                 command_bar::Ui::ToggleSidebarVisibility => {
                                     self.side_menu.toggle_visibility();
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                             },
                             command_bar::Command::Theme(command) => match command {
                                 command_bar::Theme::Switch(new) => {
                                     *theme = Theme::from(new);
-                                    (Command::none(), None)
+                                    (Task::none(), None)
                                 }
                             },
                         };
 
                         return (
-                            Command::batch(vec![
+                            Task::batch(vec![
                                 command,
                                 self.toggle_command_bar(
                                     &closed_buffers(self, clients),
@@ -510,7 +461,7 @@ impl Dashboard {
                         return self.focus_pane(*pane);
                     }
 
-                    Command::none()
+                    Task::none()
                 };
 
                 match shortcut {
@@ -563,6 +514,13 @@ impl Dashboard {
                             }
                         }
                     }
+                    LeaveBuffer => {
+                        if let Some((_, state)) = self.get_focused_mut() {
+                            if let Some(buffer) = state.buffer.data() {
+                                return self.leave_buffer(clients, buffer);
+                            }
+                        }
+                    }
                     ToggleNicklist => {
                         if let Some((_, pane)) = self.get_focused_mut() {
                             pane.update_settings(|settings| {
@@ -570,6 +528,9 @@ impl Dashboard {
                                     !settings.channel.nicklist.enabled
                             });
                         }
+                    }
+                    ToggleSidebar => {
+                        self.side_menu.toggle_visibility();
                     }
                     CommandBar => {
                         return (
@@ -582,9 +543,7 @@ impl Dashboard {
                             None,
                         );
                     }
-                    ReloadConfiguration => {
-                        return (Command::none(), Some(Event::ReloadConfiguration))
-                    }
+                    ReloadConfiguration => return (Task::none(), Some(Event::ReloadConfiguration)),
                 }
             }
             Message::FileTransfer(update) => {
@@ -618,7 +577,7 @@ impl Dashboard {
             }
         }
 
-        (Command::none(), None)
+        (Task::none(), None)
     }
 
     pub fn view<'a>(
@@ -678,7 +637,7 @@ impl Dashboard {
             .push(pane_grid)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding([height_margin, 0, 0, 0]);
+            .padding(padding::top(height_margin));
 
         let base = if let Some(command_bar) = self.command_bar.as_ref() {
             let background = anchored_overlay(
@@ -691,7 +650,7 @@ impl Dashboard {
                 0.0,
             );
 
-            // Command bar
+            // Task bar
             anchored_overlay(
                 background,
                 command_bar
@@ -702,7 +661,7 @@ impl Dashboard {
                         version,
                         config,
                     )
-                    .map(Message::Command),
+                    .map(Message::Task),
                 anchored_overlay::Anchor::BelowTopCentered,
                 10.0,
             )
@@ -723,7 +682,7 @@ impl Dashboard {
         version: &Version,
         config: &Config,
         theme: &mut Theme,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         use event::Event::*;
 
         match event {
@@ -748,7 +707,7 @@ impl Dashboard {
                         .scroll_to_start()
                         .map(move |message| Message::Pane(pane::Message::Buffer(id, message)))
                 })
-                .unwrap_or_else(Command::none),
+                .unwrap_or_else(Task::none),
             End => self
                 .get_focused_mut()
                 .map(|(pane, state)| {
@@ -757,8 +716,8 @@ impl Dashboard {
                         .scroll_to_end()
                         .map(move |message| Message::Pane(pane::Message::Buffer(pane, message)))
                 })
-                .unwrap_or_else(Command::none),
-            CloseRequested => {
+                .unwrap_or_else(Task::none),
+            CloseRequested(window) => {
                 let history = self.history.close_all();
                 let last_changed = self.last_changed;
                 let dashboard = data::Dashboard::from(&*self);
@@ -778,13 +737,13 @@ impl Dashboard {
                     }
                 };
 
-                Command::perform(task, |_| Message::Close)
+                Task::perform(task, move |_| Message::Close(window))
             }
         }
     }
 
     // TODO: Perhaps rewrite this, i just did this quickly.
-    fn toggle_file_transfers(&mut self, config: &Config) -> Command<Message> {
+    fn toggle_file_transfers(&mut self, config: &Config) -> Task<Message> {
         let panes = self.panes.clone();
 
         // If file transfers already is open, we close it.
@@ -820,10 +779,10 @@ impl Dashboard {
             }
         }
 
-        Command::batch(commands)
+        Task::batch(commands)
     }
 
-    fn open_buffer(&mut self, kind: data::Buffer, config: &Config) -> Command<Message> {
+    fn open_buffer(&mut self, kind: data::Buffer, config: &Config) -> Task<Message> {
         let panes = self.panes.clone();
 
         // If channel already is open, we focus it.
@@ -859,7 +818,7 @@ impl Dashboard {
                 *pane
             } else {
                 log::error!("Didn't find any panes");
-                return Command::none();
+                return Task::none();
             }
         };
 
@@ -872,7 +831,62 @@ impl Dashboard {
             return self.focus_pane(pane);
         }
 
-        Command::none()
+        Task::none()
+    }
+
+    pub fn leave_buffer(
+        &mut self,
+        clients: &mut data::client::Map,
+        buffer: data::Buffer,
+    ) -> (Task<Message>, Option<Event>) {
+        let pane = self.panes.iter().find_map(|(pane, state)| {
+            (state.buffer.data().as_ref() == Some(&buffer)).then_some(*pane)
+        });
+
+        // Close pane
+        if let Some(pane) = pane {
+            if self.panes.close(pane).is_none() {
+                if let Some(state) = self.panes.get_mut(pane) {
+                    state.buffer = Buffer::Empty;
+                }
+            }
+            self.last_changed = Some(Instant::now());
+
+            if self.focus == Some(pane) {
+                self.focus = None;
+            }
+        }
+
+        match buffer.clone() {
+            data::Buffer::Server(server) => (Task::none(), Some(Event::QuitServer(server))),
+            data::Buffer::Channel(server, channel) => {
+                // Send part & close history file
+                let command = data::Command::Part(channel.clone(), None);
+                let input = data::Input::command(buffer.clone(), command);
+
+                if let Some(encoded) = input.encoded() {
+                    clients.send(&buffer, encoded);
+                }
+
+                (
+                    self.history
+                        .close(server, history::Kind::Channel(channel))
+                        .map(|task| Task::perform(task, |_| Message::CloseHistory))
+                        .unwrap_or_else(Task::none),
+                    None,
+                )
+            }
+            data::Buffer::Query(server, nick) => {
+                // No PART to send, just close history
+                (
+                    self.history
+                        .close(server, history::Kind::Query(nick))
+                        .map(|task| Task::perform(task, |_| Message::CloseHistory))
+                        .unwrap_or_else(Task::none),
+                    None,
+                )
+            }
+        }
     }
 
     pub fn record_message(&mut self, server: &Server, message: data::Message) {
@@ -1014,7 +1028,7 @@ impl Dashboard {
             .map(|state| (pane, state, &mut self.history))
     }
 
-    fn focus_pane(&mut self, pane: pane_grid::Pane) -> Command<Message> {
+    fn focus_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         if self.focus != Some(pane) {
             self.focus = Some(pane);
 
@@ -1028,9 +1042,9 @@ impl Dashboard {
                             .map(move |message| Message::Pane(pane::Message::Buffer(pane, message)))
                     })
                 })
-                .unwrap_or(Command::none())
+                .unwrap_or(Task::none())
         } else {
-            Command::none()
+            Task::none()
         }
     }
 
@@ -1046,7 +1060,7 @@ impl Dashboard {
         self.panes.maximized().is_some()
     }
 
-    fn new_pane(&mut self, axis: pane_grid::Axis, config: &Config) -> Command<Message> {
+    fn new_pane(&mut self, axis: pane_grid::Axis, config: &Config) -> Task<Message> {
         if self.focus.is_some() {
             // If there is any focused pane, split it
             return self.split_pane(axis, config);
@@ -1071,10 +1085,10 @@ impl Dashboard {
             }
         }
 
-        Command::none()
+        Task::none()
     }
 
-    fn split_pane(&mut self, axis: pane_grid::Axis, config: &Config) -> Command<Message> {
+    fn split_pane(&mut self, axis: pane_grid::Axis, config: &Config) -> Task<Message> {
         if let Some(pane) = self.focus {
             let result = self
                 .panes
@@ -1085,24 +1099,18 @@ impl Dashboard {
             }
         }
 
-        Command::none()
+        Task::none()
     }
 
-    fn reset_pane(&mut self, pane: pane_grid::Pane) -> Command<Message> {
-        self.panes
-            .iter()
-            .find_map(|(p, state)| {
-                (*p == pane).then(|| {
-                    state
-                        .buffer
-                        .reset()
-                        .map(move |message| Message::Pane(pane::Message::Buffer(pane, message)))
-                })
-            })
-            .unwrap_or(Command::none())
+    fn reset_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
+        if let Some((_, state)) = self.panes.iter_mut().find(|(p, _)| **p == pane) {
+            state.buffer.reset();
+        }
+
+        Task::none()
     }
 
-    fn close_pane(&mut self, pane: pane_grid::Pane) -> Command<Message> {
+    fn close_pane(&mut self, pane: pane_grid::Pane) -> Task<Message> {
         self.last_changed = Some(Instant::now());
 
         if let Some((_, sibling)) = self.panes.close(pane) {
@@ -1111,31 +1119,31 @@ impl Dashboard {
             pane.buffer = Buffer::Empty;
         }
 
-        Command::none()
+        Task::none()
     }
 
-    pub fn track(&mut self) -> Command<Message> {
+    pub fn track(&mut self) -> Task<Message> {
         let resources = self
             .panes
             .iter()
             .filter_map(|(_, pane)| pane.resource())
             .collect();
 
-        Command::batch(
+        Task::batch(
             self.history
                 .track(resources)
                 .into_iter()
-                .map(|fut| Command::perform(fut, Message::History))
+                .map(|fut| Task::perform(fut, Message::History))
                 .collect::<Vec<_>>(),
         )
     }
 
-    pub fn tick(&mut self, now: Instant) -> Command<Message> {
-        let history = Command::batch(
+    pub fn tick(&mut self, now: Instant) -> Task<Message> {
+        let history = Task::batch(
             self.history
                 .tick(now.into())
                 .into_iter()
-                .map(|task| Command::perform(task, Message::History))
+                .map(|task| Task::perform(task, Message::History))
                 .collect::<Vec<_>>(),
         );
 
@@ -1145,8 +1153,8 @@ impl Dashboard {
 
                 self.last_changed = None;
 
-                return Command::batch(vec![
-                    Command::perform(dashboard.save(), Message::DashboardSaved),
+                return Task::batch(vec![
+                    Task::perform(dashboard.save(), Message::DashboardSaved),
                     history,
                 ]);
             }
@@ -1161,7 +1169,7 @@ impl Dashboard {
         version: &Version,
         config: &Config,
         theme: &mut Theme,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         if self.command_bar.is_some() {
             // Remove theme preview
             *theme = theme.selected();
@@ -1171,10 +1179,10 @@ impl Dashboard {
             self.focus
                 .take()
                 .map(|pane| self.focus_pane(pane))
-                .unwrap_or(Command::none())
+                .unwrap_or(Task::none())
         } else {
             self.open_command_bar(buffers, version, config);
-            Command::none()
+            Task::none()
         }
     }
 
@@ -1201,19 +1209,14 @@ impl Dashboard {
         &mut self,
         server: &Server,
         request: file_transfer::ReceiveRequest,
+        audio: &mut audio::State,
         config: &Config,
-    ) -> Option<Command<Message>> {
+    ) -> Option<Task<Message>> {
         if let Some(event) = self
             .file_transfers
             .receive(request.clone(), config.proxy.as_ref())
         {
-            let notification = &config.notifications.file_transfer_request;
-
-            if notification.enabled {
-                let text = format!("File Transfer Request: {}", request.from);
-
-                notification::show(text.as_str(), server, notification.sound());
-            };
+            notification::file_transfer_request(&config.notifications, audio, request.from, server);
 
             return Some(self.handle_file_transfer_event(server, event));
         }
@@ -1225,7 +1228,7 @@ impl Dashboard {
         &mut self,
         server: &Server,
         event: file_transfer::manager::Event,
-    ) -> Command<Message> {
+    ) -> Task<Message> {
         match event {
             file_transfer::manager::Event::NewTransfer(transfer, task) => {
                 match transfer.direction {
@@ -1249,7 +1252,7 @@ impl Dashboard {
                     }
                 }
 
-                Command::run(task, Message::FileTransfer)
+                Task::run(task, Message::FileTransfer)
             }
         }
     }

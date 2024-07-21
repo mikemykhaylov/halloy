@@ -2,9 +2,28 @@
 
 Added:
 
+- Support for CTCP queries CLIENTINFO, PING, SOURCE, and VERSION
+- Custom notification sounds. Use your own sounds or select from a few new built-in options. For more details, see [notification configuration](https://halloy.squidowl.org/configuration/notifications.html).
+
+Fixed:
+
+- Text input missing key presses in certain instances
+- Connection timeout when UI is suspended on an offscreen workspace due to channel backpressure
+
+# 2024.8 (2024-07-05)
+
+Added:
+
 - Ability to open `irc://` and `ircs://` URL schemes
 - Ability to overwrite nickname colors by providing a hex string (see [buffer configuration](https://halloy.squidowl.org/configuration/buffer.html#buffernicknamecolor-section)).
 - Ability to overwrite server & internal message colors by providing a hex string (see [buffer configuration](https://halloy.squidowl.org/configuration/buffer.html#bufferserver_messages-section)).
+- Configurable shortcuts for "Leave Buffer" and "Toggle Sidebar" actions (see [keyboard shortcuts configuration](https://halloy.squidowl.org/configuration/keyboard.html)).
+- Ability to remember window position and size when reopened.
+- Ability to hide unread indicators in sidebar (see [sidemenu configuration](https://halloy.squidowl.org/configuration/sidebar.html))
+
+Fixed:
+
+- UTF-8 channel name rendering in sidebar and in pane title bars.
 
 # 2024.7 (2024-05-05)
 

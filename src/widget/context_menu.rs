@@ -1,7 +1,7 @@
 use iced::advanced::widget::{operation, tree, Operation};
 use iced::advanced::{layout, overlay, renderer, widget, Clipboard, Layout, Shell, Widget};
 use iced::widget::{column, container};
-use iced::{event, mouse, Command, Event, Length, Point, Rectangle, Size, Vector};
+use iced::{event, mouse, Event, Length, Point, Rectangle, Size, Task, Vector};
 
 use super::{double_pass, Element, Renderer};
 use crate::{theme, Theme};
@@ -15,7 +15,7 @@ where
     Message: 'a,
     T: 'a + Copy,
 {
-    let build_menu = |length, view: &dyn Fn(T, Length) -> Element<'a, Message>| {
+    let build_menu = |length, view: &(dyn Fn(T, Length) -> Element<'a, Message> + 'a)| {
         container(column(
             entries.iter().copied().map(|entry| view(entry, length)),
         ))
@@ -117,7 +117,7 @@ impl<'a, Message> Widget<Message, Theme, Renderer> for ContextMenu<'a, Message> 
         tree: &mut iced::advanced::widget::Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
-        operation: &mut dyn widget::Operation<Message>,
+        operation: &mut dyn widget::Operation<()>,
     ) {
         let state = tree.state.downcast_mut::<State>();
 
@@ -202,7 +202,7 @@ impl<'a, Message> Widget<Message, Theme, Renderer> for ContextMenu<'a, Message> 
     }
 }
 
-pub fn close<Message: 'static>(f: fn(bool) -> Message) -> Command<Message> {
+pub fn close<Message: 'static + Send>(f: fn(bool) -> Message) -> Task<Message> {
     struct Close<T> {
         any_closed: bool,
         f: fn(bool) -> T,
@@ -232,7 +232,7 @@ pub fn close<Message: 'static>(f: fn(bool) -> Message) -> Command<Message> {
         }
     }
 
-    Command::widget(Close {
+    widget::operate(Close {
         any_closed: false,
         f,
     })
@@ -306,7 +306,7 @@ impl<'a, 'b, Message> overlay::Overlay<Message, Theme, Renderer> for Overlay<'a,
         &mut self,
         layout: Layout<'_>,
         renderer: &Renderer,
-        operation: &mut dyn widget::Operation<Message>,
+        operation: &mut dyn widget::Operation<()>,
     ) {
         self.content
             .as_widget_mut()

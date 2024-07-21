@@ -4,7 +4,7 @@ use iced::widget::{
     button, center, column, container, horizontal_space, pane_grid, row, scrollable, text,
     vertical_space, Scrollable,
 };
-use iced::Length;
+use iced::{padding, Length};
 
 use super::pane::Pane;
 use crate::widget::{context_menu, tooltip, Element};
@@ -102,7 +102,15 @@ impl Sidebar {
                             focus,
                             Buffer::Channel(server.clone(), channel.clone()),
                             true,
-                            history.has_unread(server, &history::Kind::Channel(channel.clone())),
+                            config
+                                .show_unread_indicators
+                                .then(|| {
+                                    history.has_unread(
+                                        server,
+                                        &history::Kind::Channel(channel.clone()),
+                                    )
+                                })
+                                .unwrap_or(false),
                             config.default_action,
                         ));
                     }
@@ -114,7 +122,12 @@ impl Sidebar {
                             focus,
                             Buffer::Query(server.clone(), user.clone()),
                             true,
-                            history.has_unread(server, &history::Kind::Query(user.clone())),
+                            config
+                                .show_unread_indicators
+                                .then(|| {
+                                    history.has_unread(server, &history::Kind::Query(user.clone()))
+                                })
+                                .unwrap_or(false),
                             config.default_action,
                         ));
                     }
@@ -124,7 +137,7 @@ impl Sidebar {
             }
         }
 
-        let mut menu_buttons = row![].spacing(1).padding([0, 0, 4, 0]);
+        let mut menu_buttons = row![].spacing(1).padding(padding::bottom(4));
 
         if config.buttons.command_bar {
             let button = button(center(icon::search()))
@@ -174,22 +187,23 @@ impl Sidebar {
             menu_buttons = menu_buttons.push(button_with_tooltip);
         }
 
-        let content = column![Scrollable::with_direction(
-            column,
-            scrollable::Direction::Vertical(
-                iced::widget::scrollable::Properties::default()
-                    .width(0)
-                    .scroller_width(0),
-            ),
-        ),];
+        let content =
+            column![
+                Scrollable::new(column,).direction(scrollable::Direction::Vertical {
+                    scrollbar: iced::widget::scrollable::Scrollbar::default()
+                        .width(0)
+                        .scroller_width(0),
+                    spacing: None
+                },),
+            ];
 
         let body = column![container(content).height(Length::Fill), menu_buttons];
 
         Some(
             container(body)
                 .height(Length::Fill)
-                .padding([8, 0, 6, 6])
                 .center_x(Length::Shrink)
+                .padding(padding::top(8).bottom(6).left(6))
                 .max_width(config.width)
                 .into(),
         )
@@ -248,22 +262,32 @@ fn buffer_button<'a>(
             } else {
                 icon::wifi_off()
             },
-            text(server.to_string()).style(theme::text::primary)
+            text(server.to_string())
+                .style(theme::text::primary)
+                .shaping(text::Shaping::Advanced)
         ]
         .spacing(8)
-        .align_items(iced::Alignment::Center),
+        .align_y(iced::Alignment::Center),
         Buffer::Channel(_, channel) => row![]
             .push(horizontal_space().width(3))
             .push_maybe(has_unread.then_some(icon::dot().size(6).style(theme::text::info)))
             .push(horizontal_space().width(if has_unread { 10 } else { 16 }))
-            .push(text(channel.clone()).style(theme::text::primary))
-            .align_items(iced::Alignment::Center),
+            .push(
+                text(channel.clone())
+                    .style(theme::text::primary)
+                    .shaping(text::Shaping::Advanced),
+            )
+            .align_y(iced::Alignment::Center),
         Buffer::Query(_, nick) => row![]
             .push(horizontal_space().width(3))
             .push_maybe(has_unread.then_some(icon::dot().size(6).style(theme::text::info)))
             .push(horizontal_space().width(if has_unread { 10 } else { 16 }))
-            .push(text(nick.to_string()).style(theme::text::primary))
-            .align_items(iced::Alignment::Center),
+            .push(
+                text(nick.to_string())
+                    .style(theme::text::primary)
+                    .shaping(text::Shaping::Advanced),
+            )
+            .align_y(iced::Alignment::Center),
     };
 
     let base = button(row)

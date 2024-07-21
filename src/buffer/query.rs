@@ -1,7 +1,7 @@
 use data::user::Nick;
 use data::{history, message, Config, Server};
 use iced::widget::{column, container, row, vertical_space};
-use iced::{Command, Length};
+use iced::{Length, Task};
 
 use super::{input_view, scroll_view, user_context};
 use crate::theme;
@@ -120,22 +120,11 @@ pub fn view<'a>(
         data::buffer::TextInputVisibility::Always => true,
     };
 
-    let channels = clients.get_channels(&state.server);
-
     let text_input = show_text_input.then(|| {
         column![
             vertical_space().height(4),
-            input_view::view(
-                &state.input_view,
-                buffer,
-                input,
-                &[],
-                channels,
-                clients.get_isupport(&state.server),
-                is_focused,
-                !status.connected()
-            )
-            .map(Message::InputView)
+            input_view::view(&state.input_view, input, is_focused, !status.connected())
+                .map(Message::InputView)
         ]
         .width(Length::Fill)
     });
@@ -178,7 +167,7 @@ impl Query {
         message: Message,
         clients: &mut data::client::Map,
         history: &mut history::Manager,
-    ) -> (Command<Message>, Option<Event>) {
+    ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::ScrollView(message) => {
                 let (command, event) = self.scroll_view.update(message);
@@ -190,12 +179,14 @@ impl Query {
                 (command.map(Message::ScrollView), event)
             }
             Message::InputView(message) => {
-                let (command, event) = self.input_view.update(message, clients, history);
+                let buffer = self.buffer();
+
+                let (command, event) = self.input_view.update(message, buffer, clients, history);
                 let command = command.map(Message::InputView);
 
                 match event {
                     Some(input_view::Event::InputSent) => {
-                        let command = Command::batch(vec![
+                        let command = Task::batch(vec![
                             command,
                             self.scroll_view.scroll_to_end().map(Message::ScrollView),
                         ]);
@@ -208,11 +199,11 @@ impl Query {
         }
     }
 
-    pub fn focus(&self) -> Command<Message> {
+    pub fn focus(&self) -> Task<Message> {
         self.input_view.focus().map(Message::InputView)
     }
 
-    pub fn reset(&self) -> Command<Message> {
-        self.input_view.reset().map(Message::InputView)
+    pub fn reset(&mut self) {
+        self.input_view.reset();
     }
 }

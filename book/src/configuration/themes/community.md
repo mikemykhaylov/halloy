@@ -4,6 +4,10 @@ This is a list of community created themes for Halloy.
 
 > 💡 Have a great theme you want to share? Open a pull-request [here](https://github.com/squidowl/halloy/pulls).
 
+## Oxocarbon - [Save](oxocarbon.toml)
+
+<img src="oxocarbon.png">
+
 ## Zenburn - [Save](zenburn.toml)
 
 <img src="zenburn.png">
@@ -43,6 +47,10 @@ This is a list of community created themes for Halloy.
 ## Dracula - [Save](dracula.toml)
 
 <img src="dracula.png">
+
+## Gruvbox - [Save](gruvbox.toml)
+
+<img src="gruvbox.png">
 
 ## Kanagawa - [Save](kanagawa.toml)
 
