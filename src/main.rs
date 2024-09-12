@@ -23,7 +23,7 @@ use chrono::Utc;
 use data::config::{self, Config};
 use data::version::Version;
 use data::window::Window;
-use data::{environment, history, server, version, User};
+use data::{environment, history, server, version};
 use iced::widget::{column, container};
 use iced::{Length, Subscription, Task};
 use screen::{dashboard, help, migration, welcome};
@@ -273,6 +273,8 @@ impl Halloy {
                                 for server in removed_servers {
                                     self.clients.quit(&server, None);
                                 }
+
+                                self.clients.config_updated(self.config.clone());
                             }
                             Err(error) => {
                                 self.modal = Some(Modal::ReloadConfigurationError(error));
@@ -375,11 +377,15 @@ impl Halloy {
                 }
                 stream::Update::Connected {
                     server,
-                    client: connection,
+                    mut client,
                     is_initial,
                     sent_time,
                 } => {
-                    self.clients.ready(server.clone(), connection);
+                    // Always make sure client has up-to-date config
+                    // after connection is made
+                    client.config_updated(self.config.clone());
+
+                    self.clients.ready(server.clone(), client);
 
                     let Screen::Dashboard(dashboard) = &mut self.screen else {
                         return Task::none();
@@ -410,204 +416,170 @@ impl Halloy {
 
                     Task::none()
                 }
-                stream::Update::MessagesReceived(server, messages) => {
+                stream::Update::Batch {
+                    server,
+                    events,
+                    chanmap,
+                } => {
+                    if let Some(client) = self.clients.client_mut(&server) {
+                        client.update_chanmap(chanmap);
+                    }
+
                     let Screen::Dashboard(dashboard) = &mut self.screen else {
                         return Task::none();
                     };
 
-                    let commands = messages
+                    let commands = events
                         .into_iter()
-                        .flat_map(|message| {
-                            let mut commands = vec![];
-
-                            for event in self.clients.receive(&server, message) {
-                                // Resolve a user using client state which stores attributes
-                                let resolve_user_attributes = |user: &User, channel: &str| {
-                                    self.clients
-                                        .resolve_user_attributes(&server, channel, user)
-                                        .cloned()
-                                };
-
-                                match event {
-                                    data::client::Event::Single(encoded, our_nick) => {
-                                        if let Some(message) = data::Message::received(
-                                            encoded,
-                                            our_nick,
-                                            &self.config,
-                                            resolve_user_attributes,
-                                        ) {
-                                            dashboard.record_message(&server, message);
-                                        }
-                                    }
-                                    data::client::Event::WithTarget(encoded, our_nick, target) => {
-                                        if let Some(message) = data::Message::received(
-                                            encoded,
-                                            our_nick,
-                                            &self.config,
-                                            resolve_user_attributes,
-                                        ) {
-                                            dashboard.record_message(
-                                                &server,
-                                                message.with_target(target),
-                                            );
-                                        }
-                                    }
-                                    data::client::Event::Broadcast(broadcast) => match broadcast {
-                                        data::client::Broadcast::Quit {
+                        .flat_map(|event| {
+                            match event {
+                                data::client::Event::Single(message) => {
+                                    dashboard.record_message(&server, message);
+                                }
+                                data::client::Event::WithTarget(message, target) => {
+                                    dashboard.record_message(&server, message.with_target(target));
+                                }
+                                data::client::Event::Broadcast(broadcast) => match broadcast {
+                                    data::client::Broadcast::Quit {
+                                        user,
+                                        comment,
+                                        channels,
+                                        sent_time,
+                                    } => {
+                                        dashboard.broadcast_quit(
+                                            &server,
                                             user,
                                             comment,
                                             channels,
+                                            &self.config,
                                             sent_time,
-                                        } => {
-                                            dashboard.broadcast_quit(
-                                                &server,
-                                                user,
-                                                comment,
-                                                channels,
-                                                &self.config,
-                                                sent_time,
-                                            );
-                                        }
-                                        data::client::Broadcast::Nickname {
-                                            old_user,
+                                        );
+                                    }
+                                    data::client::Broadcast::Nickname {
+                                        old_user,
+                                        new_nick,
+                                        ourself,
+                                        channels,
+                                        sent_time,
+                                    } => {
+                                        let old_nick = old_user.nickname();
+
+                                        dashboard.broadcast_nickname(
+                                            &server,
+                                            old_nick.to_owned(),
                                             new_nick,
                                             ourself,
                                             channels,
+                                            &self.config,
                                             sent_time,
-                                        } => {
-                                            let old_nick = old_user.nickname();
+                                        );
+                                    }
+                                    data::client::Broadcast::Invite {
+                                        inviter,
+                                        channel,
+                                        user_channels,
+                                        sent_time,
+                                    } => {
+                                        let inviter = inviter.nickname();
 
-                                            dashboard.broadcast_nickname(
-                                                &server,
-                                                old_nick.to_owned(),
-                                                new_nick,
-                                                ourself,
-                                                channels,
-                                                &self.config,
-                                                sent_time,
-                                            );
-                                        }
-                                        data::client::Broadcast::Invite {
-                                            inviter,
+                                        dashboard.broadcast_invite(
+                                            &server,
+                                            inviter.to_owned(),
                                             channel,
                                             user_channels,
+                                            &self.config,
                                             sent_time,
-                                        } => {
-                                            let inviter = inviter.nickname();
-
-                                            dashboard.broadcast_invite(
-                                                &server,
-                                                inviter.to_owned(),
-                                                channel,
-                                                user_channels,
-                                                &self.config,
-                                                sent_time,
-                                            );
-                                        }
-                                        data::client::Broadcast::ChangeHost {
+                                        );
+                                    }
+                                    data::client::Broadcast::ChangeHost {
+                                        old_user,
+                                        new_username,
+                                        new_hostname,
+                                        ourself,
+                                        channels,
+                                        sent_time,
+                                    } => {
+                                        dashboard.broadcast_change_host(
+                                            &server,
                                             old_user,
                                             new_username,
                                             new_hostname,
                                             ourself,
                                             channels,
-                                            sent_time,
-                                        } => {
-                                            dashboard.broadcast_change_host(
-                                                &server,
-                                                old_user,
-                                                new_username,
-                                                new_hostname,
-                                                ourself,
-                                                channels,
-                                                &self.config,
-                                                sent_time,
-                                            );
-                                        }
-                                    },
-                                    data::client::Event::Notification(
-                                        encoded,
-                                        our_nick,
-                                        notification,
-                                    ) => {
-                                        if let Some(message) = data::Message::received(
-                                            encoded,
-                                            our_nick,
                                             &self.config,
-                                            resolve_user_attributes,
-                                        ) {
-                                            dashboard.record_message(&server, message);
-                                        }
+                                            sent_time,
+                                        );
+                                    }
+                                },
+                                data::client::Event::Notification(message, notification) => {
+                                    dashboard.record_message(&server, message);
 
-                                        match notification {
-                                            data::client::Notification::DirectMessage(user) => {
-                                                // only send notification if query has unread
-                                                // or if window is not focused
-                                                if dashboard.history().has_unread(
-                                                    &server,
-                                                    &history::Kind::Query(
-                                                        user.nickname().to_owned(),
-                                                    ),
-                                                ) || !self.window.focused()
-                                                {
-                                                    notification::direct_message(
-                                                        &self.config.notifications,
-                                                        user.nickname(),
-                                                    );
-                                                }
-                                            }
-                                            data::client::Notification::Highlight(
-                                                user,
-                                                channel,
-                                            ) => {
-                                                notification::highlight(
+                                    match notification {
+                                        data::client::Notification::DirectMessage(user) => {
+                                            // only send notification if query has unread
+                                            // or if window is not focused
+                                            if dashboard.history().has_unread(
+                                                &server,
+                                                &history::Kind::Query(user.nickname().to_owned()),
+                                            ) || !self.window.focused()
+                                            {
+                                                notification::direct_message(
                                                     &self.config.notifications,
                                                     user.nickname(),
-                                                    channel,
                                                 );
                                             }
-                                            data::client::Notification::MonitoredOnline(
-                                                targets,
-                                            ) => {
-                                                targets.into_iter().for_each(|target| {
-                                                    notification::monitored_online(
-                                                        &self.config.notifications,
-                                                        target.nickname().to_owned(),
-                                                        server.clone(),
-                                                    );
-                                                });
-                                            }
-                                            data::client::Notification::MonitoredOffline(
-                                                targets,
-                                            ) => {
-                                                targets.into_iter().for_each(|target| {
-                                                    notification::monitored_offline(
-                                                        &self.config.notifications,
-                                                        target,
-                                                        server.clone(),
-                                                    );
-                                                });
-                                            }
+                                        }
+                                        data::client::Notification::Highlight(user, channel) => {
+                                            notification::highlight(
+                                                &self.config.notifications,
+                                                user.nickname(),
+                                                channel,
+                                            );
+                                        }
+                                        data::client::Notification::MonitoredOnline(targets) => {
+                                            targets.into_iter().for_each(|target| {
+                                                notification::monitored_online(
+                                                    &self.config.notifications,
+                                                    target.nickname().to_owned(),
+                                                    server.clone(),
+                                                );
+                                            });
+                                        }
+                                        data::client::Notification::MonitoredOffline(targets) => {
+                                            targets.into_iter().for_each(|target| {
+                                                notification::monitored_offline(
+                                                    &self.config.notifications,
+                                                    target,
+                                                    server.clone(),
+                                                );
+                                            });
                                         }
                                     }
-                                    data::client::Event::FileTransferRequest(request) => {
-                                        if let Some(command) = dashboard.receive_file_transfer(
-                                            &server,
-                                            request,
-                                            &self.config,
-                                        ) {
-                                            commands.push(command.map(Message::Dashboard));
-                                        }
+                                }
+                                data::client::Event::FileTransferRequest(request) => {
+                                    if let Some(command) = dashboard.receive_file_transfer(
+                                        &server,
+                                        request,
+                                        &self.config,
+                                    ) {
+                                        return Some(command.map(Message::Dashboard));
+                                    }
+                                }
+                                data::client::Event::NickUpdated(nick) => {
+                                    if let Some(client) = self.clients.client_mut(&server) {
+                                        client.update_nick(nick);
+                                    }
+                                }
+                                data::client::Event::IsupportUpdated(isupport) => {
+                                    if let Some(client) = self.clients.client_mut(&server) {
+                                        client.update_isupport(isupport);
                                     }
                                 }
                             }
 
-                            commands
+                            None
                         })
                         .collect::<Vec<_>>();
-
-                    // Must be called after receiving message batches to ensure
-                    // user & channel lists are in sync
-                    self.clients.sync(&server);
 
                     Task::batch(commands)
                 }
@@ -655,8 +627,6 @@ impl Halloy {
                 }
             }
             Message::Tick(now) => {
-                self.clients.tick(now);
-
                 if let Screen::Dashboard(dashboard) = &mut self.screen {
                     dashboard.tick(now).map(Message::Dashboard)
                 } else {
@@ -763,7 +733,7 @@ impl Halloy {
         let streams = Subscription::batch(
             self.servers
                 .entries()
-                .map(|entry| stream::run(entry, self.config.proxy.clone())),
+                .map(|entry| stream::run(entry, self.config.clone())),
         )
         .map(Message::Stream);
 

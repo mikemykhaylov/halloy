@@ -167,13 +167,13 @@ impl Message {
 
     pub fn received(
         encoded: Encoded,
-        our_nick: Nick,
+        our_nick: NickRef,
         config: &Config,
         resolve_attributes: impl Fn(&User, &str) -> Option<User>,
     ) -> Option<Message> {
         let server_time = server_time(&encoded);
-        let content = content(&encoded, &our_nick, config, &resolve_attributes)?;
-        let target = target(encoded, &our_nick, &resolve_attributes)?;
+        let content = content(&encoded, our_nick, config, &resolve_attributes)?;
+        let target = target(encoded, our_nick, &resolve_attributes)?;
 
         Some(Message {
             received_at: Posix::now(),
@@ -397,7 +397,7 @@ impl From<formatting::Fragment> for Fragment {
 
 fn target(
     message: Encoded,
-    our_nick: &Nick,
+    our_nick: NickRef,
     resolve_attributes: &dyn Fn(&User, &str) -> Option<User>,
 ) -> Option<Target> {
     use proto::command::Numeric::*;
@@ -480,7 +480,7 @@ fn target(
                     })
                 }
                 (None, Some(user)) => {
-                    let (nick, source) = if user.nickname() == *our_nick {
+                    let (nick, source) = if user.nickname() == our_nick {
                         // Message from ourself, from another client.
                         let target = User::try_from(target.as_str()).ok()?;
                         (target.nickname().to_owned(), source(user))
@@ -516,7 +516,7 @@ fn target(
                 (None, Some(user)) => {
                     let target = User::try_from(target.as_str()).ok()?;
 
-                    (target.nickname() == *our_nick).then(|| Target::Query {
+                    (target.nickname() == our_nick).then(|| Target::Query {
                         nick: user.nickname().to_owned(),
                         source: source(user),
                     })
@@ -609,7 +609,7 @@ pub fn server_time(message: &Encoded) -> DateTime<Utc> {
 
 fn content(
     message: &Encoded,
-    our_nick: &Nick,
+    our_nick: NickRef,
     config: &Config,
     resolve_attributes: &dyn Fn(&User, &str) -> Option<User>,
 ) -> Option<Content> {
@@ -645,7 +645,7 @@ fn content(
             let raw_user = message.user()?;
             let user = resolve_attributes(&raw_user, target).unwrap_or(raw_user);
 
-            (user.nickname() != *our_nick).then(|| {
+            (user.nickname() != our_nick).then(|| {
                 parse_fragments(format!(
                     "⟶ {} has joined the channel",
                     user.formatted(config.buffer.server_messages.join.username_format)

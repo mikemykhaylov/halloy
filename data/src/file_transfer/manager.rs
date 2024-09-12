@@ -83,7 +83,7 @@ impl Manager {
             to,
             path,
             server,
-            server_handle,
+            sender,
         } = request;
 
         let reverse = self.config.passive;
@@ -116,7 +116,7 @@ impl Manager {
             },
         };
 
-        let task = Task::send(id, path, filename, to, reverse, server_handle);
+        let task = Task::send(id, path, filename, to, reverse, sender);
         let (handle, stream) = task.spawn(
             self.server(),
             Duration::from_secs(self.config.timeout),
@@ -143,7 +143,7 @@ impl Manager {
             from,
             dcc_send,
             server,
-            server_handle,
+            sender: server_handle,
         } = request;
 
         // Check if this is the response to a reverse send we sent

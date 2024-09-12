@@ -566,14 +566,14 @@ impl Dashboard {
                 self.file_transfers.update(update);
             }
             Message::SendFileSelected(server, to, path) => {
-                if let Some(server_handle) = clients.get_server_handle(&server) {
+                if let Some(server_handle) = clients.get_sender(&server) {
                     if let Some(path) = path {
                         if let Some(event) = self.file_transfers.send(
                             file_transfer::SendRequest {
                                 to,
                                 path,
                                 server: server.clone(),
-                                server_handle: server_handle.clone(),
+                                sender: server_handle.clone(),
                             },
                             config.proxy.clone(),
                         ) {

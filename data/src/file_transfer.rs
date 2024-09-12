@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::user::Nick;
-use crate::{dcc, server, Server};
+use crate::{client, dcc, Server};
 
 pub use self::manager::Manager;
 pub use self::task::Task;
@@ -95,7 +95,7 @@ pub struct ReceiveRequest {
     pub from: Nick,
     pub dcc_send: dcc::Send,
     pub server: Server,
-    pub server_handle: server::Handle,
+    pub sender: client::Sender,
 }
 
 #[derive(Debug)]
@@ -103,5 +103,5 @@ pub struct SendRequest {
     pub to: Nick,
     pub path: PathBuf,
     pub server: Server,
-    pub server_handle: server::Handle,
+    pub sender: client::Sender,
 }

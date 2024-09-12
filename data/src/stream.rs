@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use futures::never::Never;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -8,10 +9,10 @@ use irc::proto::{self, command, Command};
 use irc::{codec, connection, Connection};
 use tokio::time::{self, Instant, Interval};
 
-use crate::client::Client;
+use crate::client::{self, Client};
 use crate::server::Server;
 use crate::time::Posix;
-use crate::{config, message, server};
+use crate::{config, server, Config, Message};
 
 pub type Result<T = Update, E = Error> = std::result::Result<T, E>;
 
@@ -24,7 +25,7 @@ pub enum Error {
 pub enum Update {
     Connected {
         server: Server,
-        client: Client,
+        client: client::Handle,
         is_initial: bool,
         sent_time: DateTime<Utc>,
     },
@@ -39,7 +40,11 @@ pub enum Update {
         error: String,
         sent_time: DateTime<Utc>,
     },
-    MessagesReceived(Server, Vec<message::Encoded>),
+    Batch {
+        server: Server,
+        events: Vec<client::Event<Message>>,
+        chanmap: BTreeMap<String, client::Channel>,
+    },
     Quit(Server, Option<String>),
 }
 
@@ -48,37 +53,37 @@ enum State {
         last_retry: Option<Instant>,
     },
     Connected {
+        client: Client,
         stream: Stream,
         batch: Batch,
         ping_time: Interval,
         ping_timeout: Option<Interval>,
+        tick: time::Interval,
     },
     Quit,
 }
 
 enum Input {
     IrcMessage(Result<codec::ParseResult, codec::Error>),
-    Batch(Vec<message::Encoded>),
-    Send(proto::Message),
+    Batch(Vec<client::Event>),
+    Client(client::Request),
     Ping,
     PingTimeout,
+    Tick(Instant),
 }
 
 struct Stream {
     connection: Connection<irc::Codec>,
-    receiver: mpsc::Receiver<proto::Message>,
+    receiver: mpsc::Receiver<client::Request>,
 }
 
-pub fn run(
-    server: server::Entry,
-    proxy: Option<config::Proxy>,
-) -> impl futures::Stream<Item = Update> {
+pub fn run(server: server::Entry, config: Config) -> impl futures::Stream<Item = Update> {
     let (sender, receiver) = mpsc::unbounded();
 
     let runner = stream::once(async {
         // Spawn to unblock backend from iced stream which
         // has backpressure
-        tokio::spawn(_run(server, proxy, sender));
+        tokio::spawn(_run(server, config, sender));
         future::pending().await
     });
 
@@ -87,12 +92,15 @@ pub fn run(
 
 async fn _run(
     server: server::Entry,
-    proxy: Option<config::Proxy>,
+    mut config: Config,
     sender: mpsc::UnboundedSender<Update>,
 ) -> Never {
-    let server::Entry { server, config } = server;
+    let server::Entry {
+        server,
+        config: server_config,
+    } = server;
 
-    let reconnect_delay = Duration::from_secs(config.reconnect_delay);
+    let reconnect_delay = Duration::from_secs(server_config.reconnect_delay);
 
     let mut is_initial = true;
     let mut state = State::Disconnected { last_retry: None };
@@ -116,13 +124,13 @@ async fn _run(
                     }
                 }
 
-                match connect(server.clone(), config.clone(), proxy.clone()).await {
-                    Ok((stream, client)) => {
+                match connect(server.clone(), server_config.clone(), config.proxy.clone()).await {
+                    Ok((stream, client, handle)) => {
                         log::info!("[{server}] connected");
 
                         let _ = sender.unbounded_send(Update::Connected {
                             server: server.clone(),
-                            client,
+                            client: handle,
                             is_initial,
                             sent_time: Utc::now(),
                         });
@@ -130,10 +138,12 @@ async fn _run(
                         is_initial = false;
 
                         state = State::Connected {
+                            client,
                             stream,
                             batch: Batch::new(),
                             ping_timeout: None,
-                            ping_time: ping_time_interval(config.ping_time),
+                            ping_time: ping_time_interval(server_config.ping_time),
+                            tick: time::interval(Duration::from_secs(1)),
                         };
                     }
                     Err(e) => {
@@ -157,16 +167,19 @@ async fn _run(
             }
             State::Connected {
                 stream,
+                client,
                 batch,
                 ping_time,
                 ping_timeout,
+                tick,
             } => {
                 let input = {
                     let mut select = stream::select_all([
                         (&mut stream.connection).map(Input::IrcMessage).boxed(),
-                        (&mut stream.receiver).map(Input::Send).boxed(),
+                        (&mut stream.receiver).map(Input::Client).boxed(),
                         ping_time.tick().into_stream().map(|_| Input::Ping).boxed(),
                         batch.map(Input::Batch).boxed(),
+                        tick.tick().into_stream().map(Input::Tick).boxed(),
                     ]);
 
                     if let Some(timeout) = ping_timeout.as_mut() {
@@ -206,7 +219,9 @@ async fn _run(
                             };
                         }
                         _ => {
-                            batch.messages.push(message.into());
+                            batch.messages.extend(
+                                client.receive(&mut stream.connection, message.into()).await,
+                            );
                         }
                     },
                     Input::IrcMessage(Ok(Err(e))) => {
@@ -224,11 +239,19 @@ async fn _run(
                             last_retry: Some(Instant::now()),
                         };
                     }
-                    Input::Batch(messages) => {
-                        let _ = sender
-                            .unbounded_send(Update::MessagesReceived(server.clone(), messages));
+                    Input::Batch(events) => {
+                        let events = events
+                            .into_iter()
+                            .filter_map(|event| event.decode(client, &config))
+                            .collect();
+
+                        let _ = sender.unbounded_send(Update::Batch {
+                            server: server.clone(),
+                            events,
+                            chanmap: client.chanmap.clone(),
+                        });
                     }
-                    Input::Send(message) => {
+                    Input::Client(client::Request::Send(message, buffer)) => {
                         if let Command::QUIT(reason) = &message.command {
                             let reason = reason.clone();
 
@@ -239,8 +262,12 @@ async fn _run(
 
                             state = State::Quit;
                         } else {
-                            let _ = stream.connection.send(message).await;
+                            client.send(&mut stream.connection, message, buffer).await;
                         }
+                    }
+                    Input::Client(client::Request::ConfigUpdated(updated)) => {
+                        config = updated;
+                        log::debug!("[{server}] config updated");
                     }
                     Input::Ping => {
                         let now = Posix::now().as_nanos().to_string();
@@ -249,7 +276,7 @@ async fn _run(
                         let _ = stream.connection.send(command!("PING", now)).await;
 
                         if ping_timeout.is_none() {
-                            *ping_timeout = Some(ping_timeout_interval(config.ping_timeout));
+                            *ping_timeout = Some(ping_timeout_interval(server_config.ping_timeout));
                         }
                     }
                     Input::PingTimeout => {
@@ -263,6 +290,9 @@ async fn _run(
                         state = State::Disconnected {
                             last_retry: Some(Instant::now()),
                         };
+                    }
+                    Input::Tick(now) => {
+                        client.tick(&mut stream.connection, now.into_std()).await;
                     }
                 }
             }
@@ -278,23 +308,27 @@ async fn connect(
     server: Server,
     config: config::Server,
     proxy: Option<config::Proxy>,
-) -> Result<(Stream, Client), connection::Error> {
-    let connection = Connection::new(config.connection(proxy), irc::Codec).await?;
+) -> Result<(Stream, Client, client::Handle), connection::Error> {
+    let mut connection = Connection::new(config.connection(proxy), irc::Codec).await?;
 
     let (sender, receiver) = mpsc::channel(100);
+
+    let (client, connected) =
+        Client::new(&mut connection, server, config, client::Sender::new(sender)).await;
 
     Ok((
         Stream {
             connection,
             receiver,
         },
-        Client::new(server, config, sender),
+        client,
+        connected,
     ))
 }
 
 struct Batch {
     interval: Interval,
-    messages: Vec<message::Encoded>,
+    messages: Vec<client::Event>,
 }
 
 impl Batch {
@@ -312,7 +346,7 @@ impl Batch {
 }
 
 impl futures::Stream for Batch {
-    type Item = Vec<message::Encoded>;
+    type Item = Vec<client::Event>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,

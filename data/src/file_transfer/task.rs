@@ -23,7 +23,7 @@ use tokio::{
 use tokio_stream::StreamExt;
 
 use super::Id;
-use crate::{config, dcc, server, user::Nick};
+use crate::{client, config, dcc, user::Nick};
 
 /// 16 KiB
 pub const BUFFER_SIZE: usize = 16 * 1024;
@@ -59,7 +59,7 @@ pub enum Task {
     Receive {
         id: Id,
         dcc_send: dcc::Send,
-        server_handle: server::Handle,
+        sender: client::Sender,
         remote_user: Nick,
     },
     Send {
@@ -68,22 +68,17 @@ pub enum Task {
         sanitized_filename: String,
         remote_user: Nick,
         reverse: bool,
-        server_handle: server::Handle,
+        sender: client::Sender,
     },
 }
 
 impl Task {
-    pub fn receive(
-        id: Id,
-        dcc_send: dcc::Send,
-        remote_user: Nick,
-        server_handle: server::Handle,
-    ) -> Self {
+    pub fn receive(id: Id, dcc_send: dcc::Send, remote_user: Nick, sender: client::Sender) -> Self {
         Self::Receive {
             id,
             dcc_send,
             remote_user,
-            server_handle,
+            sender,
         }
     }
 
@@ -93,7 +88,7 @@ impl Task {
         sanitized_filename: String,
         remote_user: Nick,
         reverse: bool,
-        server_handle: server::Handle,
+        sender: client::Sender,
     ) -> Self {
         Self::Send {
             id,
@@ -101,7 +96,7 @@ impl Task {
             sanitized_filename,
             remote_user,
             reverse,
-            server_handle,
+            sender,
         }
     }
 
@@ -122,7 +117,7 @@ impl Task {
                     id,
                     dcc_send,
                     remote_user,
-                    server_handle,
+                    sender: server_handle,
                 } => {
                     if let Err(error) = receive(
                         id,
@@ -146,7 +141,7 @@ impl Task {
                     sanitized_filename,
                     remote_user,
                     reverse,
-                    server_handle,
+                    sender: server_handle,
                 } => {
                     if let Err(error) = send(
                         id,
@@ -212,7 +207,7 @@ async fn receive(
     id: Id,
     dcc_send: dcc::Send,
     remote_user: Nick,
-    mut server_handle: server::Handle,
+    mut sender: client::Sender,
     mut action: Receiver<Action>,
     mut update: Sender<Update>,
     server: Option<Server>,
@@ -246,7 +241,7 @@ async fn receive(
                 unreachable!();
             };
 
-            let _ = server_handle
+            let _ = sender
                 .send(
                     dcc::Send::Reverse {
                         filename: filename.clone(),
@@ -331,7 +326,7 @@ async fn receive(
 
     let sha256 = hex::encode(hasher.finalize());
 
-    let _ = server_handle
+    let _ = sender
         .send(command!(
             "PRIVMSG",
             remote_user.to_string(),
@@ -356,7 +351,7 @@ async fn send(
     sanitized_filename: String,
     remote_user: Nick,
     reverse: bool,
-    mut server_handle: server::Handle,
+    mut sender: client::Sender,
     mut action: Receiver<Action>,
     mut update: Sender<Update>,
     server: Option<Server>,
@@ -373,7 +368,7 @@ async fn send(
         let host = IpAddr::V4([127, 0, 0, 1].into());
         let token = u16::from(id).to_string();
 
-        let _ = server_handle
+        let _ = sender
             .send(
                 dcc::Send::Reverse {
                     filename: sanitized_filename.clone(),
@@ -414,7 +409,7 @@ async fn send(
             unreachable!();
         };
 
-        let _ = server_handle
+        let _ = sender
             .send(
                 dcc::Send::Direct {
                     filename: sanitized_filename.clone(),
@@ -493,7 +488,7 @@ async fn send(
 
     let sha256 = hex::encode(hasher.finalize());
 
-    let _ = server_handle
+    let _ = sender
         .send(command!(
             "PRIVMSG",
             remote_user.to_string(),
