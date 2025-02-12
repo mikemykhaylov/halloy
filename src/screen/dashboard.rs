@@ -21,6 +21,7 @@ use log::{debug, error};
 
 use self::command_bar::CommandBar;
 use self::pane::Pane;
+use self::settings::Settings;
 use self::sidebar::Sidebar;
 use self::theme_editor::ThemeEditor;
 use crate::buffer::{self, Buffer};
@@ -32,6 +33,7 @@ use crate::{event, notification, theme, window, Theme};
 
 mod command_bar;
 pub mod pane;
+mod settings;
 pub mod sidebar;
 mod theme_editor;
 
@@ -46,6 +48,7 @@ pub struct Dashboard {
     command_bar: Option<CommandBar>,
     file_transfers: file_transfer::Manager,
     theme_editor: Option<ThemeEditor>,
+    settings: Option<Settings>,
     notifications: notification::Notifications,
     previews: preview::Collection,
 }
@@ -63,6 +66,7 @@ pub enum Message {
     SendFileSelected(Server, Nick, Option<PathBuf>),
     CloseContextMenu(window::Id, bool),
     ThemeEditor(theme_editor::Message),
+    Settings(settings::Message),
     ConfigReloaded(Result<Config, config::Error>),
     Client(client::Message),
     LoadPreview((url::Url, Result<data::Preview, data::preview::LoadError>)),
@@ -93,6 +97,7 @@ impl Dashboard {
             command_bar: None,
             file_transfers: file_transfer::Manager::new(config.file_transfer.clone()),
             theme_editor: None,
+            settings: None,
             notifications: notification::Notifications::new(),
             previews: preview::Collection::default(),
         };
@@ -581,6 +586,7 @@ impl Dashboard {
                         let _ = open::that_detached(WIKI_WEBSITE);
                         (Task::none(), None)
                     }
+                    sidebar::Event::OpenSettings => (self.toggle_settings(main_window), None),
                 };
 
                 return (
@@ -737,17 +743,28 @@ impl Dashboard {
                                 command_bar::Configuration::OpenCacheDirectory => {
                                     let _ = open::that_detached(environment::cache_dir());
                                     (Task::none(), None)
-                                },
+                                }
                                 command_bar::Configuration::OpenDataDirectory => {
                                     let _ = open::that_detached(environment::data_dir());
                                     (Task::none(), None)
-                                },
+                                }
                                 command_bar::Configuration::OpenWebsite => {
                                     let _ = open::that_detached(environment::WIKI_WEBSITE);
                                     (Task::none(), None)
                                 }
                                 command_bar::Configuration::Reload => {
                                     (Task::perform(Config::load(), Message::ConfigReloaded), None)
+                                }
+                                command_bar::Configuration::OpenSettings => {
+                                    if let Some(settings) = &self.settings {
+                                        (window::gain_focus(settings.window), None)
+                                    } else {
+                                        let (settings, task) = Settings::open(main_window);
+
+                                        self.settings = Some(settings);
+
+                                        (task.then(|_| Task::none()), None)
+                                    }
                                 }
                             },
                             command_bar::Command::UI(command) => match command {
@@ -774,7 +791,9 @@ impl Dashboard {
                                 }
                             },
                             command_bar::Command::Window(command) => match command {
-                                command_bar::Window::ToggleFullscreen => (window::toggle_fullscreen(), None),
+                                command_bar::Window::ToggleFullscreen => {
+                                    (window::toggle_fullscreen(), None)
+                                }
                             },
                         };
 
@@ -941,6 +960,9 @@ impl Dashboard {
                     ThemeEditor => {
                         return (self.toggle_theme_editor(theme, main_window), None);
                     }
+                    Settings => {
+                        return (self.toggle_settings(main_window), None);
+                    }
                     Highlight => {
                         return (
                             self.toggle_internal_buffer(
@@ -951,9 +973,7 @@ impl Dashboard {
                             None,
                         );
                     }
-                    ToggleFullscreen => {
-                        return (window::toggle_fullscreen(), None)
-                    },
+                    ToggleFullscreen => return (window::toggle_fullscreen(), None),
                 }
             }
             Message::FileTransfer(update) => {
@@ -1027,6 +1047,10 @@ impl Dashboard {
                 }
 
                 return (Task::batch(tasks), event);
+            }
+            Message::Settings(message) => {
+                // TODO: Messages.
+                return (Task::none(), None);
             }
             Message::ConfigReloaded(config) => {
                 return (Task::none(), Some(Event::ConfigReloaded(config)));
@@ -1141,6 +1165,10 @@ impl Dashboard {
         } else if let Some(editor) = self.theme_editor.as_ref() {
             if editor.window == window {
                 return editor.view(theme).map(Message::ThemeEditor);
+            }
+        } else if let Some(settings) = self.settings.as_ref() {
+            if settings.window == window {
+                return settings.view().map(Message::Settings);
             }
         }
 
@@ -1332,6 +1360,18 @@ impl Dashboard {
             let (editor, task) = ThemeEditor::open(main_window);
 
             self.theme_editor = Some(editor);
+
+            task.then(|_| Task::none())
+        }
+    }
+
+    fn toggle_settings(&mut self, main_window: &Window) -> Task<Message> {
+        if let Some(settings) = self.settings.take() {
+            window::close(settings.window)
+        } else {
+            let (settings, task) = Settings::open(main_window);
+
+            self.settings = Some(settings);
 
             task.then(|_| Task::none())
         }
@@ -2039,6 +2079,7 @@ impl Dashboard {
             command_bar: None,
             file_transfers: file_transfer::Manager::new(config.file_transfer.clone()),
             theme_editor: None,
+            settings: None,
             notifications: notification::Notifications::new(),
             previews: preview::Collection::default(),
         };
@@ -2090,6 +2131,24 @@ impl Dashboard {
                     if let Some(editor) = self.theme_editor.take() {
                         *theme = theme.selected();
                         return window::close(editor.window);
+                    }
+                }
+                window::Event::Moved(_)
+                | window::Event::Resized(_)
+                | window::Event::Focused
+                | window::Event::Unfocused
+                | window::Event::Opened { .. } => {}
+            }
+        } else if self
+            .settings
+            .as_ref()
+            .map(|e| e.window == id)
+            .unwrap_or_default()
+        {
+            match event {
+                window::Event::CloseRequested => {
+                    if let Some(settings) = self.settings.take() {
+                        return window::close(settings.window);
                     }
                 }
                 window::Event::Moved(_)

@@ -32,6 +32,7 @@ pub enum Message {
     ConfigReloaded(Result<Config, config::Error>),
     OpenReleaseWebsite,
     OpenDocumentation,
+    OpenSettings,
     ReloadComplete,
     Noop,
 }
@@ -50,6 +51,7 @@ pub enum Event {
     ToggleThemeEditor,
     OpenReleaseWebsite,
     OpenDocumentation,
+    OpenSettings,
     ConfigReloaded(Result<Config, config::Error>),
 }
 
@@ -113,6 +115,7 @@ impl Sidebar {
             }
             Message::Noop => (Task::none(), None),
             Message::OpenDocumentation => (Task::none(), Some(Event::OpenDocumentation)),
+            Message::OpenSettings => (Task::none(), Some(Event::OpenSettings)),
         }
     }
 
@@ -227,6 +230,12 @@ impl Sidebar {
                             None,
                             icon::documentation(),
                             Message::OpenDocumentation,
+                        ),
+                        Menu::Settings => context_button(
+                            text("Settings"),
+                            Some(&keyboard.settings),
+                            icon::documentation(), // TODO new icon.
+                            Message::OpenSettings,
                         ),
                     }
                 },
@@ -408,6 +417,7 @@ enum Menu {
     Version,
     HorizontalRule,
     Documentation,
+    Settings,
 }
 
 impl Menu {
@@ -415,6 +425,7 @@ impl Menu {
         vec![
             Menu::Version,
             Menu::HorizontalRule,
+            Menu::Settings,
             Menu::CommandBar,
             Menu::FileTransfers,
             Menu::Highlights,

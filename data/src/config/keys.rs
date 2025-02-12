@@ -42,6 +42,8 @@ pub struct Keyboard {
     pub logs: KeyBind,
     #[serde(default = "KeyBind::theme_editor")]
     pub theme_editor: KeyBind,
+    #[serde(default = "KeyBind::settings")]
+    pub settings: KeyBind,
     #[serde(default = "KeyBind::highlight")]
     pub highlight: KeyBind,
 }
@@ -68,6 +70,7 @@ impl Default for Keyboard {
             file_transfers: KeyBind::file_transfers(),
             logs: KeyBind::logs(),
             theme_editor: KeyBind::theme_editor(),
+            settings: KeyBind::settings(),
             highlight: KeyBind::highlight(),
         }
     }
@@ -97,6 +100,7 @@ impl Keyboard {
             shortcut(self.file_transfers.clone(), FileTransfers),
             shortcut(self.logs.clone(), Logs),
             shortcut(self.theme_editor.clone(), ThemeEditor),
+            shortcut(self.settings.clone(), Settings),
             shortcut(self.highlight.clone(), Highlight),
         ]
     }

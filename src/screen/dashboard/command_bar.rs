@@ -139,6 +139,7 @@ pub enum Configuration {
     OpenWebsite,
     OpenCacheDirectory,
     OpenDataDirectory,
+    OpenSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +253,7 @@ impl Version {
 impl Configuration {
     fn list() -> Vec<Self> {
         vec![
+            Configuration::OpenSettings,
             Configuration::OpenConfigDirectory,
             Configuration::OpenDataDirectory,
             Configuration::OpenCacheDirectory,
@@ -346,6 +348,7 @@ impl std::fmt::Display for Configuration {
             Configuration::Reload => write!(f, "Reload config file"),
             Configuration::OpenCacheDirectory => write!(f, "Open cache directory"),
             Configuration::OpenDataDirectory => write!(f, "Open data directory"),
+            Configuration::OpenSettings => write!(f, "Open settings"),
         }
     }
 }
